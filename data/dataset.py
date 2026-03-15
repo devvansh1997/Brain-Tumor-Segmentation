@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 import nibabel as nib
 import numpy as np
@@ -67,48 +67,111 @@ class BratsSliceDataset(Dataset):
         case_ids: Sequence[str],
         ignore_empty_slices: bool = False,
         min_foreground_pixels: int = 1,
+        preprocessed: bool = False,
     ) -> None:
         self.images_dir = Path(images_dir)
         self.labels_dir = Path(labels_dir)
         self.case_ids = list(case_ids)
         self.ignore_empty_slices = ignore_empty_slices
         self.min_foreground_pixels = min_foreground_pixels
-        self._cache = {}
+        self.preprocessed = preprocessed
+
+        # case_id -> (image_array, mask_array)
+        self._case_cache = {}
 
         self.samples = self._build_index()
 
-    def _build_index(self) -> List[Tuple[str, Path, Path, int]]:
-        """
-        Build an index of (case_id, image_path, label_path, slice_idx).
-        """
-        samples = []
-
-        for case_id in self.case_ids:
+    def _get_case_paths(self, case_id: str) -> Tuple[Path, Path]:
+        if self.preprocessed:
+            image_path = self.images_dir / f"{case_id}.npy"
+            label_path = self.labels_dir / f"{case_id}.npy"
+        else:
             image_path = self.images_dir / f"{case_id}.nii.gz"
             label_path = self.labels_dir / f"{case_id}.nii.gz"
+        return image_path, label_path
 
-            if not image_path.exists():
-                raise FileNotFoundError(f"Missing image file: {image_path}")
-            if not label_path.exists():
-                raise FileNotFoundError(f"Missing label file: {label_path}")
+    def _load_case_arrays(self, case_id: str):
+        """
+        Returns:
+            preprocessed=True:
+                image: [D, C, H, W]
+                mask:  [D, H, W]
+            preprocessed=False:
+                image: [H, W, D, C]
+                mask:  [H, W, D]
+        """
+        if case_id in self._case_cache:
+            return self._case_cache[case_id]
 
+        image_path, label_path = self._get_case_paths(case_id)
+
+        if not image_path.exists():
+            raise FileNotFoundError(f"Missing image file: {image_path}")
+        if not label_path.exists():
+            raise FileNotFoundError(f"Missing label file: {label_path}")
+
+        if self.preprocessed:
+            image = np.load(image_path, mmap_mode="r")   # [D, C, H, W]
+            mask = np.load(label_path, mmap_mode="r")    # [D, H, W]
+        else:
+            image_nii = nib.load(str(image_path))
             label_nii = nib.load(str(label_path))
-            label = label_nii.get_fdata().astype(np.uint8)  # [H, W, D]
 
-            if label.ndim != 3:
+            image = image_nii.get_fdata(dtype=np.float32)          # [H, W, D, C]
+            mask = label_nii.get_fdata(dtype=np.float32).astype(np.uint8)  # [H, W, D]
+
+            if image.ndim != 4:
                 raise ValueError(
-                    f"Expected label shape [H, W, D], got {label.shape} for case {case_id}"
+                    f"Expected image shape [H, W, D, C], got {image.shape} for {image_path.name}"
+                )
+            if mask.ndim != 3:
+                raise ValueError(
+                    f"Expected mask shape [H, W, D], got {mask.shape} for {label_path.name}"
                 )
 
-            depth = label.shape[2]
+            image = zscore_normalize_per_modality(image)
+            mask = remap_brats_labels(mask)
 
-            for slice_idx in range(depth):
-                if self.ignore_empty_slices:
-                    fg_pixels = int((label[:, :, slice_idx] > 0).sum())
-                    if fg_pixels < self.min_foreground_pixels:
-                        continue
+        self._case_cache[case_id] = (image, mask)
+        return image, mask
 
-                samples.append((case_id, image_path, label_path, slice_idx))
+    def _build_index(self) -> List[Tuple[str, int]]:
+        """
+        Build an index of (case_id, slice_idx).
+        """
+        samples: List[Tuple[str, int]] = []
+
+        for case_id in self.case_ids:
+            image, mask = self._load_case_arrays(case_id)
+
+            if self.preprocessed:
+                # mask: [D, H, W]
+                if mask.ndim != 3:
+                    raise ValueError(
+                        f"Expected preprocessed mask shape [D, H, W], got {mask.shape} for case {case_id}"
+                    )
+                depth = mask.shape[0]
+
+                for slice_idx in range(depth):
+                    if self.ignore_empty_slices:
+                        fg_pixels = int((mask[slice_idx] > 0).sum())
+                        if fg_pixels < self.min_foreground_pixels:
+                            continue
+                    samples.append((case_id, slice_idx))
+            else:
+                # mask: [H, W, D]
+                if mask.ndim != 3:
+                    raise ValueError(
+                        f"Expected raw mask shape [H, W, D], got {mask.shape} for case {case_id}"
+                    )
+                depth = mask.shape[2]
+
+                for slice_idx in range(depth):
+                    if self.ignore_empty_slices:
+                        fg_pixels = int((mask[:, :, slice_idx] > 0).sum())
+                        if fg_pixels < self.min_foreground_pixels:
+                            continue
+                    samples.append((case_id, slice_idx))
 
         if len(samples) == 0:
             raise RuntimeError("No valid slices found. Check paths or slice filtering settings.")
@@ -118,65 +181,28 @@ class BratsSliceDataset(Dataset):
     def __len__(self) -> int:
         return len(self.samples)
 
-    def _load_case_slice(
-        self,
-        image_path: Path,
-        label_path: Path,
-        slice_idx: int,
-    ):
-        """
-        Load one 2D slice from a BraTS case.
-
-        Returns:
-            image_slice: [H, W, C]
-            mask_slice:  [H, W]
-        """
-
-        image_nii = nib.load(str(image_path))
-        label_nii = nib.load(str(label_path))
-
-        # Load directly as float32 to avoid float64 memory spike
-        image = image_nii.get_fdata(dtype=np.float32)
-
-        # nibabel requires float dtype; convert to uint8 after loading
-        mask = label_nii.get_fdata(dtype=np.float32).astype(np.uint8)
-
-        if image.ndim != 4:
-            raise ValueError(
-                f"Expected image shape [H, W, D, C], got {image.shape} for {image_path.name}"
-            )
-
-        if mask.ndim != 3:
-            raise ValueError(
-                f"Expected mask shape [H, W, D], got {mask.shape} for {label_path.name}"
-            )
-
-        # Normalize MRI modalities
-        image = zscore_normalize_per_modality(image)
-
-        # Remap BraTS labels {0,1,2,4} -> {0,1,2,3}
-        mask = remap_brats_labels(mask)
-
-        image_slice = image[:, :, slice_idx, :]   # [H, W, C]
-        mask_slice = mask[:, :, slice_idx]        # [H, W]
-
-        return image_slice, mask_slice
-
     def __getitem__(self, index: int):
-        case_id, image_path, label_path, slice_idx = self.samples[index]
+        case_id, slice_idx = self.samples[index]
+        image, mask = self._load_case_arrays(case_id)
 
-        image_slice, mask_slice = self._load_case_slice(
-            image_path=image_path,
-            label_path=label_path,
-            slice_idx=slice_idx,
-        )
-
-        image_tensor = torch.from_numpy(image_slice).permute(2, 0, 1).float()  # [C, H, W]
-        mask_tensor = torch.from_numpy(mask_slice).long()  # [H, W]
+        if self.preprocessed:
+            # image: [D, C, H, W]
+            # mask:  [D, H, W]
+            image_slice = np.asarray(image[slice_idx], dtype=np.float32)  # [C, H, W]
+            mask_slice = np.asarray(mask[slice_idx], dtype=np.uint8)      # [H, W]
+            image_tensor = torch.from_numpy(image_slice).float()
+            mask_tensor = torch.from_numpy(mask_slice).long()
+        else:
+            # image: [H, W, D, C]
+            # mask:  [H, W, D]
+            image_slice = image[:, :, slice_idx, :]   # [H, W, C]
+            mask_slice = mask[:, :, slice_idx]        # [H, W]
+            image_tensor = torch.from_numpy(image_slice).permute(2, 0, 1).float()  # [C, H, W]
+            mask_tensor = torch.from_numpy(mask_slice).long()
 
         meta = {
             "case_id": case_id,
-            "slice_idx": slice_idx,
+            "slice_idx": torch.tensor(slice_idx, dtype=torch.long),
         }
 
         return image_tensor, mask_tensor, meta

@@ -98,9 +98,13 @@ def hd95(pred: np.ndarray, target: np.ndarray) -> float:
     return float(np.percentile(all_distances, 95))
 
 
-def compute_brats_region_metrics(pred_mask: np.ndarray, target_mask: np.ndarray) -> Dict[str, float]:
+def compute_brats_region_metrics(
+    pred_mask: np.ndarray,
+    target_mask: np.ndarray,
+    compute_hd95: bool = False,
+) -> Dict[str, float]:
     """
-    Compute Dice and HD95 for ET, TC, WT.
+    Compute Dice and optionally HD95 for ET, TC, WT.
 
     Inputs:
         pred_mask:   [H, W] or [D, H, W] integer label map
@@ -118,9 +122,15 @@ def compute_brats_region_metrics(pred_mask: np.ndarray, target_mask: np.ndarray)
         "dice_et": dice_score(pred_et, target_et),
         "dice_tc": dice_score(pred_tc, target_tc),
         "dice_wt": dice_score(pred_wt, target_wt),
-        "hd95_et": hd95(pred_et, target_et),
-        "hd95_tc": hd95(pred_tc, target_tc),
-        "hd95_wt": hd95(pred_wt, target_wt),
     }
+
+    if compute_hd95:
+        metrics["hd95_et"] = hd95(pred_et, target_et)
+        metrics["hd95_tc"] = hd95(pred_tc, target_tc)
+        metrics["hd95_wt"] = hd95(pred_wt, target_wt)
+    else:
+        metrics["hd95_et"] = float("nan")
+        metrics["hd95_tc"] = float("nan")
+        metrics["hd95_wt"] = float("nan")
 
     return metrics
