@@ -71,6 +71,16 @@ def validate_one_epoch(
 
     pred_volumes: DefaultDict[str, dict] = defaultdict(dict)
     gt_volumes: DefaultDict[str, dict] = defaultdict(dict)
+    # gt_unique = np.unique(gt_volumes)
+    # pred_unique = np.unique(pred_volumes)
+    # gt_et_voxels = int((gt_volumes == 3).sum())
+    # pred_et_voxels = int((pred_volumes == 3).sum())
+
+    # print(
+    #     f"[VAL CASE] {cid} | "
+    #     f"gt_unique={gt_unique.tolist()} | pred_unique={pred_unique.tolist()} | "
+    #     f"gt_et_voxels={gt_et_voxels} | pred_et_voxels={pred_et_voxels}"
+    # )
 
     with torch.no_grad():
         for batch_idx, (images, masks, meta) in enumerate(loader):
@@ -127,23 +137,34 @@ def validate_one_epoch(
             compute_hd95=compute_hd95,
         )
 
-        dice_et.append(metrics["dice_et"])
-        dice_tc.append(metrics["dice_tc"])
-        dice_wt.append(metrics["dice_wt"])
+        gt_has_et = np.any(gt_volume == 3)
+        gt_has_tc = np.any((gt_volume == 1) | (gt_volume == 3))
+        gt_has_wt = np.any(gt_volume > 0)
 
-        hd95_et.append(metrics["hd95_et"])
-        hd95_tc.append(metrics["hd95_tc"])
-        hd95_wt.append(metrics["hd95_wt"])
+        if gt_has_et:
+            dice_et.append(metrics["dice_et"])
+            if compute_hd95:
+                hd95_et.append(metrics["hd95_et"])
+
+        if gt_has_tc:
+            dice_tc.append(metrics["dice_tc"])
+            if compute_hd95:
+                hd95_tc.append(metrics["hd95_tc"])
+
+        if gt_has_wt:
+            dice_wt.append(metrics["dice_wt"])
+            if compute_hd95:
+                hd95_wt.append(metrics["hd95_wt"])
 
     results = {
         "loss": avg_loss,
         "pixel_acc": pixel_acc,
-        "dice_et": float(np.nanmean(dice_et)),
-        "dice_tc": float(np.nanmean(dice_tc)),
-        "dice_wt": float(np.nanmean(dice_wt)),
-        "hd95_et": float(np.nanmean(hd95_et)) if len(hd95_et) > 0 else float("nan"),
-        "hd95_tc": float(np.nanmean(hd95_tc)) if len(hd95_tc) > 0 else float("nan"),
-        "hd95_wt": float(np.nanmean(hd95_wt)) if len(hd95_wt) > 0 else float("nan"),
+        "dice_et": float(np.mean(dice_et)) if len(dice_et) > 0 else float("nan"),
+        "dice_tc": float(np.mean(dice_tc)) if len(dice_tc) > 0 else float("nan"),
+        "dice_wt": float(np.mean(dice_wt)) if len(dice_wt) > 0 else float("nan"),
+        "hd95_et": float(np.mean(hd95_et)) if len(hd95_et) > 0 else float("nan"),
+        "hd95_tc": float(np.mean(hd95_tc)) if len(hd95_tc) > 0 else float("nan"),
+        "hd95_wt": float(np.mean(hd95_wt)) if len(hd95_wt) > 0 else float("nan"),
     }
 
     return results

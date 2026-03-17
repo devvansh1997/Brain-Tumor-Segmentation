@@ -100,9 +100,6 @@ class BratsSliceDataset(Dataset):
                 image: [H, W, D, C]
                 mask:  [H, W, D]
         """
-        if case_id in self._case_cache:
-            return self._case_cache[case_id]
-
         image_path, label_path = self._get_case_paths(case_id)
 
         if not image_path.exists():
@@ -111,26 +108,31 @@ class BratsSliceDataset(Dataset):
             raise FileNotFoundError(f"Missing label file: {label_path}")
 
         if self.preprocessed:
+            # DO NOT cache full preprocessed volumes in RAM
             image = np.load(image_path, mmap_mode="r")   # [D, C, H, W]
             mask = np.load(label_path, mmap_mode="r")    # [D, H, W]
-        else:
-            image_nii = nib.load(str(image_path))
-            label_nii = nib.load(str(label_path))
+            return image, mask
 
-            image = image_nii.get_fdata(dtype=np.float32)          # [H, W, D, C]
-            mask = label_nii.get_fdata(dtype=np.float32).astype(np.uint8)  # [H, W, D]
+        if case_id in self._case_cache:
+            return self._case_cache[case_id]
 
-            if image.ndim != 4:
-                raise ValueError(
-                    f"Expected image shape [H, W, D, C], got {image.shape} for {image_path.name}"
-                )
-            if mask.ndim != 3:
-                raise ValueError(
-                    f"Expected mask shape [H, W, D], got {mask.shape} for {label_path.name}"
-                )
+        image_nii = nib.load(str(image_path))
+        label_nii = nib.load(str(label_path))
 
-            image = zscore_normalize_per_modality(image)
-            mask = remap_brats_labels(mask)
+        image = image_nii.get_fdata(dtype=np.float32)                   # [H, W, D, C]
+        mask = label_nii.get_fdata(dtype=np.float32).astype(np.uint8)   # [H, W, D]
+
+        if image.ndim != 4:
+            raise ValueError(
+                f"Expected image shape [H, W, D, C], got {image.shape} for {image_path.name}"
+            )
+        if mask.ndim != 3:
+            raise ValueError(
+                f"Expected mask shape [H, W, D], got {mask.shape} for {label_path.name}"
+            )
+
+        image = zscore_normalize_per_modality(image)
+        mask = remap_brats_labels(mask)
 
         self._case_cache[case_id] = (image, mask)
         return image, mask
@@ -142,14 +144,21 @@ class BratsSliceDataset(Dataset):
         samples: List[Tuple[str, int]] = []
 
         for case_id in self.case_ids:
-            image, mask = self._load_case_arrays(case_id)
+            image_path, label_path = self._get_case_paths(case_id)
+
+            if not image_path.exists():
+                raise FileNotFoundError(f"Missing image file: {image_path}")
+            if not label_path.exists():
+                raise FileNotFoundError(f"Missing label file: {label_path}")
 
             if self.preprocessed:
-                # mask: [D, H, W]
+                mask = np.load(label_path, mmap_mode="r")   # [D, H, W]
+
                 if mask.ndim != 3:
                     raise ValueError(
                         f"Expected preprocessed mask shape [D, H, W], got {mask.shape} for case {case_id}"
                     )
+
                 depth = mask.shape[0]
 
                 for slice_idx in range(depth):
@@ -158,12 +167,17 @@ class BratsSliceDataset(Dataset):
                         if fg_pixels < self.min_foreground_pixels:
                             continue
                     samples.append((case_id, slice_idx))
+
+                del mask
+
             else:
-                # mask: [H, W, D]
+                _, mask = self._load_case_arrays(case_id)   # raw mode only
+
                 if mask.ndim != 3:
                     raise ValueError(
                         f"Expected raw mask shape [H, W, D], got {mask.shape} for case {case_id}"
                     )
+
                 depth = mask.shape[2]
 
                 for slice_idx in range(depth):
