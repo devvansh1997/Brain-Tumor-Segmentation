@@ -4,7 +4,7 @@ This repository contains a minimal and reproducible pipeline for brain tumor seg
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 Brain-Tumor-Segmentation/
@@ -31,7 +31,7 @@ Brain-Tumor-Segmentation/
 
 ---
 
-## ⚙️ Setup
+## Setup
 
 ### Create environment
 
@@ -43,7 +43,7 @@ pip install -r requirements.txt
 
 ---
 
-## 📦 Dataset
+## Dataset
 
 Download BraTS dataset and place it as:
 
@@ -61,7 +61,7 @@ imagesTs/
 
 ---
 
-## 🚀 Running Locally (Debug Mode)
+## Running Locally
 
 Run small sample to verify pipeline:
 
@@ -74,7 +74,7 @@ python scripts/train.py \
 
 ---
 
-## 🖥️ Running on HPC (Slurm)
+## Running on HPC
 
 Example job script:
 
@@ -98,7 +98,7 @@ sbatch job.slurm
 
 ---
 
-## 📊 Training Details
+## Training Details
 
 * Model: 2D U-Net
 * Loss: Dice + CrossEntropy
@@ -107,24 +107,8 @@ sbatch job.slurm
 
 ---
 
-## 📈 Visualization
-
-To generate qualitative results:
+## Visualization
 
 ```bash
 python scripts/visualize_preds.py
 ```
-
-This produces prediction vs ground truth comparisons.
-
----
-
-## 📌 Notes
-
-* Preprocessing can be done once and reused across folds
-* Debug mode uses a very small subset for quick iteration
-* Recommended workflow:
-
-  1. Run locally (small subset)
-  2. Validate pipeline
-  3. Scale to full dataset on HPC
